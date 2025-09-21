@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="pl">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Kolekcja nagrań do nauki języka angielskiego</title>
+    <link rel="icon" href="./music-icon.png" type="image/png">
+    <link rel="shortcut icon" href="./music-icon.png" type="image/png">
+
+    <style>
+        :root { --bg:#0f172a; --card:#111827; --fg:#e5e7eb; --muted:#9ca3af; --acc:#22c55e; }
+        * { box-sizing: border-box }
+        body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+               background: linear-gradient(180deg,#0b1022,#0f172a); color: var(--fg); }
+        header { padding: 24px 16px; text-align:center }
+        h1 { margin:0 0 8px; font-size: 22px }
+        .sub { color: var(--muted); font-size: 14px }
+        .wrap { max-width: 900px; margin: 0 auto; padding: 16px }
+        .player { background: var(--card); border: 1px solid #1f2937; border-radius: 16px; padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.35) }
+        .controls { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+        button { background:#1f2937; border:1px solid #374151; color:var(--fg); padding:10px 14px; border-radius:12px; cursor:pointer }
+        button:hover { border-color:#4b5563 }
+        .title { flex:1; min-width:200px; font-size:14px; color:var(--muted) }
+        .progress { width:100%; appearance:none; height:6px; border-radius:999px; background:#1f2937; }
+        .progress::-webkit-slider-thumb { -webkit-appearance:none; width:14px; height:14px; border-radius:50%; background:var(--acc); cursor:pointer }
+        .grid { margin-top:16px; display:grid; grid-template-columns:1fr; gap:8px; max-height: 55vh; overflow:auto; padding-right:4px }
+        @media (min-width: 700px){ .grid { grid-template-columns: 1fr 1fr } }
+        .item { background:#0b1224; border:1px solid #1e293b; border-radius:12px; padding:12px; display:flex; gap:10px; align-items:center }
+        .item .name { flex:1; font-size:14px; word-break: break-word }
+        .item .len { color:var(--muted); font-size:12px }
+        .search { width:100%; margin:12px 0; }
+        .search input { width:100%; padding:10px 12px; background:#111827; color:var(--fg); border:1px solid #1f2937; border-radius:12px }
+        footer { text-align:center; color:var(--muted); font-size:12px; padding:14px }
+        .playing { outline: 2px solid var(--acc); }
+    </style>
+</head>
+<body>
+<header>
+    <h1>Kolorowa akademia</h1>
+    <div class="sub">Kolekcja nagrań do nauki języka angielskiego</div>
+</header>
+
+<main class="wrap">
+    <section class="player">
+        <div class="search">
+            <input id="q" type="search" placeholder="Szukaj w tytułach..." aria-label="Szukaj" />
+        </div>
+
+        <div class="controls">
+            <button id="prev" aria-label="Poprzedni">⏮</button>
+            <button id="play" aria-label="Odtwórz/Pauza">▶️</button>
+            <button id="next" aria-label="Następny">⏭</button>
+            <div class="title" id="title">—</div>
+        </div>
+
+        <input id="seek" class="progress" type="range" min="0" max="100" value="0" step="0.1" aria-label="Postęp" />
+
+        <div class="grid" id="list"></div>
+    </section>
+</main>
+
+<footer>© <span id="y"></span> — Kolorowa akademia </footer>
+
+<audio id="audio" preload="metadata" crossorigin="anonymous"></audio>
+
+<script>
+    const audio = document.getElementById('audio');
+    const listEl = document.getElementById('list');
+    const titleEl = document.getElementById('title');
+    const playBtn = document.getElementById('play');
+    const prevBtn = document.getElementById('prev');
+    const nextBtn = document.getElementById('next');
+    const seek = document.getElementById('seek');
+    const q = document.getElementById('q');
+    document.getElementById('y').textContent = new Date().getFullYear();
+
+    let tracks = [], view = [], idx = 0, userSeek = false;
+
+    // Load manifest of mp3 filenames
+    fetch('manifest.json')
+      .then(r => r.json())
+      .then(names => {
+        // map to objects with title and url
+        tracks = names
+          .filter(n => /\.mp3$/i.test(n))
+          .map(n => ({ name: n, url: n, lower: n.toLowerCase() }));
+        view = tracks.slice();
+        renderList();
+        const saved = Number(localStorage.getItem('lastIndex') ?? 0);
+        if (!isNaN(saved) && saved >= 0 && saved < view.length) idx = saved;
+        load(idx);
+      })
+      .catch(err => {
+        listEl.innerHTML = '<div style="padding:12px;color:#fca5a5">Błąd ładowania manifestu. Upewnij się, że plik <b>manifest.json</b> istnieje i zawiera listę nazw MP3.</div>';
+        console.error(err);
+      });
+
+    function renderList() {
+      listEl.innerHTML = '';
+      view.forEach((t, i) => {
+        const div = document.createElement('div');
+        div.className = 'item';
+        div.tabIndex = 0;
+        div.innerHTML = `
+          <button aria-label="Odtwórz ${escapeHtml(t.name)}">▶️</button>
+          <div class="name">${escapeHtml(t.name)}</div>
+          <div class="len" data-i="${i}">--:--</div>
+        `;
+        div.querySelector('button').onclick = () => { idx = tracks.indexOf(t); load(idx); play(); };
+        div.onclick = (e) => { if(e.target.tagName!=='BUTTON'){ idx = tracks.indexOf(t); load(idx); play(); } };
+        listEl.appendChild(div);
+
+        // Preload basic duration metadata silently
+        const probe = new Audio();
+        probe.src = t.url;
+        probe.preload = 'metadata';
+        probe.addEventListener('loadedmetadata', () => {
+          const el = listEl.querySelector(`.len[data-i="${i}"]`);
+          if (el) el.textContent = fmt(probe.duration);
+        });
+      });
+      highlight();
+    }
+
+    function load(i) {
+      if (i < 0 || i >= tracks.length) return;
+      audio.src = tracks[i].url;
+      titleEl.textContent = tracks[i].name;
+      localStorage.setItem('lastIndex', String(i));
+      highlight();
+    }
+
+    function play(){ audio.play(); playBtn.textContent = '⏸'; }
+    function pause(){ audio.pause(); playBtn.textContent = '▶️'; }
+
+    playBtn.onclick = () => audio.paused ? play() : pause();
+    prevBtn.onclick = () => { idx = (idx - 1 + tracks.length) % tracks.length; load(idx); play(); };
+    nextBtn.onclick = () => { idx = (idx + 1) % tracks.length; load(idx); play(); };
+
+    audio.addEventListener('ended', () => nextBtn.click());
+    audio.addEventListener('timeupdate', () => {
+      if (audio.duration && !userSeek) seek.value = (audio.currentTime / audio.duration) * 100;
+    });
+    audio.addEventListener('play', () => playBtn.textContent = '⏸');
+    audio.addEventListener('pause', () => playBtn.textContent = '▶️');
+
+    seek.addEventListener('input', () => { userSeek = true; });
+    seek.addEventListener('change', () => {
+      if (audio.duration) audio.currentTime = (seek.value / 100) * audio.duration;
+      userSeek = false;
+    });
+
+    q.addEventListener('input', () => {
+      const s = q.value.trim().toLowerCase();
+      view = s ? tracks.filter(t => t.lower.includes(s)) : tracks.slice();
+      renderList();
+    });
+
+    function highlight(){
+      [...document.querySelectorAll('.item')].forEach(el => el.classList.remove('playing'));
+      const cur = tracks[idx];
+      const pos = [...document.querySelectorAll('.item .name')].findIndex(e => e.textContent === cur?.name);
+      if (pos >= 0) document.querySelectorAll('.item')[pos].classList.add('playing');
+    }
+
+    function fmt(s){
+      if (!isFinite(s)) return '--:--';
+      const m = Math.floor(s/60), ss = Math.floor(s%60).toString().padStart(2,'0');
+      return `${m}:${ss}`;
+    }
+    function escapeHtml(str){
+      return str.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+    }
+
+    // Klawisze: spacja (play/pause), ←/→ przewijanie, ↑/↓ głośność
+    window.addEventListener('keydown', (e) => {
+      if (['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) return;
+      if (e.code === 'Space') { e.preventDefault(); audio.paused ? play() : pause(); }
+      if (e.key === 'ArrowRight') audio.currentTime += 5;
+      if (e.key === 'ArrowLeft') audio.currentTime -= 5;
+      if (e.key === 'ArrowUp') audio.volume = Math.min(1, audio.volume + 0.05);
+      if (e.key === 'ArrowDown') audio.volume = Math.max(0, audio.volume - 0.05);
+    });
+</script>
+</body>
+</html>
